@@ -8,12 +8,9 @@ import {
   FileText,
   MessageCircle,
   Zap,
-  AlertTriangle,
-  X,
 } from "lucide-react";
 import api from "@/lib/api";
 
-// Define proper types
 interface DocumentData {
   success: boolean;
   text: string;
@@ -33,25 +30,15 @@ export default function Home() {
   const [documentData, setDocumentData] = useState<DocumentData | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [healthStatus, setHealthStatus] = useState<HealthStatus | null>(null);
-  const [showHealthWarning, setShowHealthWarning] = useState(false);
 
-  // Check API health on component mount
   useEffect(() => {
     const checkHealth = async () => {
       try {
         const response = await api.get<HealthStatus>("/api/health");
         setHealthStatus(response.data);
 
-        // Show warning if no AI services are configured
-        if (
-          !response.data.services.openai &&
-          !response.data.services.huggingface
-        ) {
-          setShowHealthWarning(true);
-        }
       } catch (error) {
         console.error("Health check failed:", error);
-        setShowHealthWarning(true);
       }
     };
 
@@ -102,30 +89,6 @@ export default function Home() {
           </div>
         </div>
       </header>
-
-      {/* Health Warning Banner */}
-      {showHealthWarning && (
-        <div className="bg-yellow-50 border-b border-yellow-200">
-          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-3">
-            <div className="flex items-center space-x-3">
-              <AlertTriangle className="h-5 w-5 text-yellow-600" />
-              <div className="flex-1">
-                <p className="text-sm text-yellow-800">
-                  <strong>Configuration Required:</strong> Please add your
-                  OpenAI or HuggingFace API key to enable AI features. Check the
-                  README.md for setup instructions.
-                </p>
-              </div>
-              <button
-                onClick={() => setShowHealthWarning(false)}
-                className="text-yellow-600 hover:text-yellow-800"
-              >
-                <X className="h-4 w-4" />
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* Hero Section */}
       {!documentData && (
@@ -194,10 +157,8 @@ export default function Home() {
         </div>
       )}
 
-      
       <main className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 pb-12">
         <div className="space-y-8">
-         
           <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
             <div className="bg-gradient-to-r from-blue-50 to-indigo-50 px-6 py-4 border-b border-gray-200">
               <h3 className="text-lg font-semibold text-gray-900 mb-1">
@@ -252,7 +213,6 @@ export default function Home() {
             </div>
           </div>
 
-         
           <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
             <div className="bg-gradient-to-r from-green-50 to-blue-50 px-6 py-4 border-b border-gray-200">
               <div className="flex items-center justify-between">
@@ -264,26 +224,6 @@ export default function Home() {
                     Chat with your document to get insights and answers
                   </p>
                 </div>
-                {healthStatus && (
-                  <div className="flex items-center space-x-2 text-sm">
-                    <span className="text-gray-500">AI Service:</span>
-                    <span
-                      className={`px-2 py-1 rounded-full text-xs font-medium ${
-                        healthStatus.services.openai
-                          ? "bg-blue-100 text-blue-700"
-                          : healthStatus.services.huggingface
-                          ? "bg-purple-100 text-purple-700"
-                          : "bg-gray-100 text-gray-700"
-                      }`}
-                    >
-                      {healthStatus.services.openai
-                        ? "OpenAI"
-                        : healthStatus.services.huggingface
-                        ? "HuggingFace"
-                        : "Not Configured"}
-                    </span>
-                  </div>
-                )}
               </div>
             </div>
 
@@ -292,7 +232,6 @@ export default function Home() {
             </div>
           </div>
 
-          
           {documentData && (
             <div className="bg-blue-50 rounded-lg p-6 border border-blue-200">
               <h4 className="font-medium text-blue-900 mb-3">
@@ -330,7 +269,8 @@ export default function Home() {
           <div className="flex items-center justify-between">
             <div className="text-sm text-gray-500">
               <p>
-                Built with Next.js, TypeScript, Axios and AI • Open Source Project
+                Built with Next.js, TypeScript, Axios and AI • Open Source
+                Project
               </p>
             </div>
             <div className="flex items-center space-x-4 text-xs text-gray-400">

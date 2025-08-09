@@ -1,15 +1,26 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
-import { Send, MessageCircle, Bot, User, AlertCircle, X } from "lucide-react"; 
-import api from "@/lib/api";
-
+import {
+  Send,
+  MessageCircle,
+  Bot,
+  User,
+  AlertCircle,
+  X,
+  Wifi,
+  WifiOff,
+} from "lucide-react";
 
 interface Message {
   id: string;
   text: string;
   isUser: boolean;
   timestamp: Date;
+  metadata?: {
+    modelUsed?: string;
+    processingTime?: number;
+  };
 }
 
 interface DocumentData {
@@ -21,22 +32,13 @@ interface DocumentData {
 
 interface ChatResponse {
   answer: string;
-  relevantChunks: number;
-}
-
-interface ApiError {
-  code?: string;
-  response?: {
-    status?: number;
-    data?: {
-      error?: string;
-    };
-  };
-  message?: string;
+  modelUsed?: string;
+  processingTime?: number;
+  relevantChunks?: number;
 }
 
 interface ChatInterfaceProps {
-  documentData: DocumentData | null; 
+  documentData: DocumentData | null;
 }
 
 export default function ChatInterface({ documentData }: ChatInterfaceProps) {
@@ -44,7 +46,125 @@ export default function ChatInterface({ documentData }: ChatInterfaceProps) {
   const [inputValue, setInputValue] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [isConnected, setIsConnected] = useState(true);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  const parseMarkdown = (text: string) => {
+    const lines = text.split("\n");
+
+    return lines.map((line, index) => {
+      const trimmedLine = line.trim();
+
+      if (!trimmedLine) {
+        return <br key={`br-${index}`} />;
+      }
+      if (trimmedLine.startsWith("### ")) {
+        const text = trimmedLine.replace("### ", "");
+        return (
+          <h3
+            key={`h3-${index}`}
+            className="text-lg font-bold text-gray-900 mt-3 mb-2"
+          >
+            {parseInline(text)}
+          </h3>
+        );
+      } else if (trimmedLine.startsWith("## ")) {
+        const text = trimmedLine.replace("## ", "");
+        return (
+          <h2
+            key={`h2-${index}`}
+            className="text-xl font-bold text-gray-900 mt-3 mb-2"
+          >
+            {parseInline(text)}
+          </h2>
+        );
+      } else if (trimmedLine.startsWith("# ")) {
+        const text = trimmedLine.replace("# ", "");
+        return (
+          <h1
+            key={`h1-${index}`}
+            className="text-2xl font-bold text-gray-900 mt-3 mb-2"
+          >
+            {parseInline(text)}
+          </h1>
+        );
+      }
+   
+      else if (trimmedLine.startsWith("- ") || trimmedLine.startsWith("* ")) {
+        const text = trimmedLine.replace(/^[*-] /, "");
+        return (
+          <div
+            key={`bullet-${index}`}
+            className="flex items-start space-x-2 mb-1"
+          >
+            <span className="text-blue-600 font-bold mt-1">•</span>
+            <span className="text-gray-700">{parseInline(text)}</span>
+          </div>
+        );
+      }
+        else if (/^\d+\. /.test(trimmedLine)) {
+        const text = trimmedLine.replace(/^\d+\. /, "");
+        const number = trimmedLine.match(/^(\d+)\./)?.[1];
+        return (
+          <div
+            key={`number-${index}`}
+            className="flex items-start space-x-2 mb-1"
+          >
+            <span className="text-blue-600 font-bold mt-1">{number}.</span>
+            <span className="text-gray-700">{parseInline(text)}</span>
+          </div>
+        );
+      }
+
+      else {
+        return (
+          <p key={`p-${index}`} className="text-gray-700 mb-2">
+            {parseInline(trimmedLine)}
+          </p>
+        );
+      }
+    });
+  };
+
+  const parseInline = (text: string) => {
+
+    const parts = text.split(/(\*\*.*?\*\*|\*.*?\*|`.*?`)/g);
+
+    return parts.map((part, index) => {
+      if (part.startsWith("**") && part.endsWith("**")) {
+        // Bold text
+        return (
+          <strong key={`bold-${index}`} className="font-bold text-gray-900">
+            {part.slice(2, -2)}
+          </strong>
+        );
+      } else if (
+        part.startsWith("*") &&
+        part.endsWith("*") &&
+        !part.startsWith("**")
+      ) {
+        // Italic text
+        return (
+          <em key={`italic-${index}`} className="italic">
+            {part.slice(1, -1)}
+          </em>
+        );
+      } else if (part.startsWith("`") && part.endsWith("`")) {
+        // Inline code
+        return (
+          <code
+            key={`code-${index}`}
+            className="bg-gray-200 px-1 py-0.5 rounded text-sm font-mono"
+          >
+            {part.slice(1, -1)}
+          </code>
+        );
+      } else {
+        // Regular text
+        return part;
+      }
+    });
+  };
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -56,6 +176,11 @@ export default function ChatInterface({ documentData }: ChatInterfaceProps) {
     e.preventDefault();
     if (!inputValue.trim() || isLoading) return;
 
+    if (!documentData) {
+      setError("Please upload a document first");
+      return;
+    }
+
     const userMessage: Message = {
       id: Date.now().toString(),
       text: inputValue,
@@ -64,49 +189,78 @@ export default function ChatInterface({ documentData }: ChatInterfaceProps) {
     };
 
     setMessages((prev) => [...prev, userMessage]);
-    const currentInput = inputValue; 
+    const currentInput = inputValue;
     setInputValue("");
     setIsLoading(true);
     setError(null);
 
     try {
-      const response = await api.post<ChatResponse>("/api/chat", {
-        question: currentInput,
-        documentText: documentData?.text,
-        chunks: documentData?.chunks,
+      const response = await fetch("/api/chat", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          question: currentInput,
+          documentText: documentData.text,
+          chunks: documentData.chunks,
+        }),
       });
+
+      if (!response.ok) {
+        let errorMessage = "Failed to get response";
+
+        try {
+          const errorData = await response.json();
+          errorMessage = errorData.error || errorMessage;
+
+          if (response.status === 503) {
+            setIsConnected(false);
+            errorMessage =
+              "🔌 Python AI backend is not running. Please start the Python server:\n\n```\npython main.py\n```";
+          } else if (response.status === 408) {
+            errorMessage =
+              "⏰ Request timeout. The AI model took too long to respond. Please try a shorter question.";
+          }
+        } catch {
+          if (response.status === 503) {
+            setIsConnected(false);
+            errorMessage =
+              "🔌 Cannot connect to AI backend. Please ensure Python server is running.";
+          }
+        }
+
+        throw new Error(errorMessage);
+      }
+
+      const data: ChatResponse = await response.json();
+      setIsConnected(true);
 
       const botMessage: Message = {
         id: (Date.now() + 1).toString(),
-        text:
-          response.data.answer || "Sorry, I could not process your question.",
+        text: data.answer || "Sorry, I could not process your question.",
         isUser: false,
         timestamp: new Date(),
+        metadata: {
+          modelUsed: data.modelUsed,
+          processingTime: data.processingTime,
+        },
       };
 
       setMessages((prev) => [...prev, botMessage]);
     } catch (error) {
-      
-      const apiError = error as ApiError;
-      console.error("Error sending message:", apiError);
+      console.error("❌ Chat error:", error);
 
-      let errorMessage = "Sorry, there was an error processing your question.";
-
-      if (apiError.code === "ECONNABORTED") {
-        errorMessage =
-          "Request timeout. Please try again with a shorter question.";
-      } else if (apiError.response?.status === 429) {
-        errorMessage =
-          "Too many requests. Please wait a moment before trying again.";
-      } else if (apiError.response?.data?.error) {
-        errorMessage = apiError.response.data.error;
-      }
+      const errorMessage =
+        error instanceof Error
+          ? error.message
+          : "Sorry, there was an error processing your question.";
 
       setError(errorMessage);
 
       const errorBotMessage: Message = {
         id: (Date.now() + 1).toString(),
-        text: errorMessage,
+        text: `❌ **Error**: ${errorMessage}`,
         isUser: false,
         timestamp: new Date(),
       };
@@ -125,12 +279,29 @@ export default function ChatInterface({ documentData }: ChatInterfaceProps) {
     setError(null);
   };
 
+  const insertSuggestion = (suggestion: string) => {
+    setInputValue(suggestion);
+  };
+
   if (!documentData) {
     return (
       <div className="flex items-center justify-center h-64 text-gray-500">
         <div className="text-center">
           <MessageCircle className="mx-auto h-12 w-12 mb-4 opacity-50" />
           <p>Upload a document to start asking questions</p>
+          <div className="mt-4 flex items-center justify-center space-x-2 text-sm">
+            {isConnected ? (
+              <>
+                <Wifi className="h-4 w-4 text-green-500" />
+                <span className="text-green-600">AI Backend Connected</span>
+              </>
+            ) : (
+              <>
+                <WifiOff className="h-4 w-4 text-red-500" />
+                <span className="text-red-600">AI Backend Disconnected</span>
+              </>
+            )}
+          </div>
         </div>
       </div>
     );
@@ -138,14 +309,19 @@ export default function ChatInterface({ documentData }: ChatInterfaceProps) {
 
   return (
     <div className="flex flex-col h-96 bg-white border border-gray-200 rounded-lg shadow-sm">
-     
+      {/* Header */}
       <div className="flex items-center justify-between p-4 border-b border-gray-200">
         <div className="flex items-center space-x-2">
           <MessageCircle className="h-5 w-5 text-blue-600" />
           <h3 className="font-medium text-gray-900">Ask about your document</h3>
+          <div className="flex items-center space-x-1">
+          </div>
         </div>
         <div className="flex items-center space-x-2">
-          <div className="text-sm text-gray-500 truncate max-w-xs">
+          <div
+            className="text-sm text-gray-500 truncate max-w-xs"
+            title={documentData.fileName}
+          >
             {documentData.fileName}
           </div>
           {messages.length > 0 && (
@@ -161,7 +337,7 @@ export default function ChatInterface({ documentData }: ChatInterfaceProps) {
         </div>
       </div>
 
-  
+      {/* Error Message */}
       {error && (
         <div className="p-3 bg-red-50 border-b border-red-200 flex items-center space-x-2">
           <AlertCircle className="h-4 w-4 text-red-600 flex-shrink-0" />
@@ -177,7 +353,7 @@ export default function ChatInterface({ documentData }: ChatInterfaceProps) {
         </div>
       )}
 
-    
+      {/* Messages */}
       <div className="flex-1 overflow-y-auto p-4 space-y-4 custom-scrollbar">
         {messages.length === 0 ? (
           <div className="text-center text-gray-500 py-8">
@@ -187,7 +363,7 @@ export default function ChatInterface({ documentData }: ChatInterfaceProps) {
               &ldquo;Summarize this document&rdquo;
             </p>
 
-      
+            {/* Suggested Questions */}
             <div className="mt-6 space-y-2">
               <p className="text-xs text-gray-400 uppercase tracking-wide font-medium">
                 Suggested Questions
@@ -201,7 +377,7 @@ export default function ChatInterface({ documentData }: ChatInterfaceProps) {
                 ].map((suggestion, index) => (
                   <button
                     key={index}
-                    onClick={() => setInputValue(suggestion)}
+                    onClick={() => insertSuggestion(suggestion)}
                     className="px-3 py-1 bg-gray-100 text-gray-700 rounded-full text-xs hover:bg-gray-200 transition-colors"
                     type="button"
                   >
@@ -243,16 +419,36 @@ export default function ChatInterface({ documentData }: ChatInterfaceProps) {
                       : "bg-gray-100 text-gray-900"
                   }`}
                 >
-                  <p className="text-sm whitespace-pre-wrap leading-relaxed">
-                    {message.text}
-                  </p>
+                  {message.isUser ? (
+                    // User messages - simple text
+                    <p className="text-sm whitespace-pre-wrap leading-relaxed">
+                      {message.text}
+                    </p>
+                  ) : (
+                    // Bot messages - parse markdown
+                    <div className="text-sm leading-relaxed">
+                      {parseMarkdown(message.text)}
+                    </div>
+                  )}
                 </div>
-                <p className="text-xs text-gray-500 mt-1 px-1">
-                  {message.timestamp.toLocaleTimeString([], {
-                    hour: "2-digit",
-                    minute: "2-digit",
-                  })}
-                </p>
+
+                <div className="flex items-center justify-between mt-1 px-1">
+                  <p className="text-xs text-gray-500">
+                    {message.timestamp.toLocaleTimeString([], {
+                      hour: "2-digit",
+                      minute: "2-digit",
+                    })}
+                  </p>
+
+                  {/* Show model info for bot messages */}
+                  {!message.isUser && message.metadata?.modelUsed && (
+                    <p className="text-xs text-gray-400 ml-2">
+                      {message.metadata.modelUsed.split("/").pop()}
+                      {message.metadata.processingTime &&
+                        ` • ${message.metadata.processingTime.toFixed(1)}s`}
+                    </p>
+                  )}
+                </div>
               </div>
             </div>
           ))
@@ -285,7 +481,7 @@ export default function ChatInterface({ documentData }: ChatInterfaceProps) {
         <div ref={messagesEndRef} />
       </div>
 
-     
+      {/* Input */}
       <form
         onSubmit={handleSubmit}
         className="p-4 border-t border-gray-200 bg-gray-50"

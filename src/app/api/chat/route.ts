@@ -1,14 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
-import OpenAI from "openai";
-import axios from "axios";
 
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
+const PYTHON_API_URL = process.env.PYTHON_API_URL || "http://127.0.0.1:8000";
 
 export async function POST(request: NextRequest) {
   try {
-    const { question, documentText, chunks } = await request.json();
+    const body = await request.json();
+    const { question, documentText, chunks } = body;
 
     if (!question || !documentText) {
       return NextResponse.json(
@@ -17,121 +14,139 @@ export async function POST(request: NextRequest) {
       );
     }
 
-   
-    const relevantChunks = findRelevantChunks(question, chunks || [], 3);
-    const context = relevantChunks.join("\n\n");
 
-    const prompt = `Based on the following document content, answer the user's question. If the answer is not in the document, say so clearly.
+    try {
 
-Document Content:
-${context}
-
-Question: ${question}
-
-Answer:`;
-
-    if (process.env.OPENAI_API_KEY) {
-      const completion = await openai.chat.completions.create({
-        model: "gpt-3.5-turbo",
-        messages: [
-          {
-            role: "system",
-            content:
-              "You are a helpful assistant that answers questions based on provided documents. Be accurate and cite specific parts of the document when possible.",
-          },
-          {
-            role: "user",
-            content: prompt,
-          },
-        ],
-        max_tokens: 500,
-        temperature: 0.3,
-      });
-
-      return NextResponse.json({
-        answer:
-          completion.choices[0]?.message?.content || "No response generated",
-        relevantChunks: relevantChunks.length,
-      });
-    } else {
-     
-      return await handleHuggingFace(prompt);
-    }
-  } catch (error) {
-    console.error("Error in chat:", error);
-    return NextResponse.json(
-      { error: "Error processing question" },
-      { status: 500 }
-    );
-  }
-}
-
-function findRelevantChunks(
-  question: string,
-  chunks: string[],
-  topK: number
-): string[] {
-  const questionWords = question.toLowerCase().split(/\W+/);
-
-  const scored = chunks.map((chunk) => {
-    const chunkWords = chunk.toLowerCase().split(/\W+/);
-    const overlap = questionWords.filter(
-      (word) =>
-        word.length > 3 && chunkWords.some((cword) => cword.includes(word))
-    ).length;
-
-    return { chunk, score: overlap };
-  });
-
-  return scored
-    .sort((a, b) => b.score - a.score)
-    .slice(0, topK)
-    .map((item) => item.chunk);
-}
-
-async function handleHuggingFace(prompt: string) {
- 
-  if (!process.env.HUGGINGFACE_API_KEY) {
-    return NextResponse.json({
-      answer:
-        "Please configure OpenAI API key or HuggingFace API key for full functionality.",
-      relevantChunks: 0,
-    });
-  }
-
-  try {
-    const response = await axios.post(
-      "https://api-inference.huggingface.co/models/microsoft/DialoGPT-medium",
-      {
-        inputs: prompt,
-        parameters: {
-          max_length: 500,
-          temperature: 0.3,
-          do_sample: true,
-        },
-      },
-      {
+      const healthResponse = await fetch(`${PYTHON_API_URL}/health`, {
+        method: "GET",
         headers: {
-          Authorization: `Bearer ${process.env.HUGGINGFACE_API_KEY}`,
           "Content-Type": "application/json",
         },
-        timeout: 30000, 
+        signal: AbortSignal.timeout(5000),
+      });
+
+      if (!healthResponse.ok) {
+        return NextResponse.json(
+          {
+            error: "Python AI service is not available",
+            details: `Health check failed with status ${healthResponse.status}`,
+            instructions: [
+              "The Python backend for AI processing is not running.",
+              "Please start it by running: npm run python:dev",
+              "Or check if it's running on http://127.0.0.1:8000",
+            ],
+          },
+          { status: 503 }
+        );
       }
-    );
 
-    const generatedText =
-      response.data[0]?.generated_text || "No response generated";
+      const healthData = await healthResponse.json();
 
-    return NextResponse.json({
-      answer: generatedText,
-      relevantChunks: 1,
-    });
+      if (!healthData.huggingface_available) {
+        return NextResponse.json(
+          {
+            error: "HuggingFace service not configured in Python API",
+            details: healthData,
+            instructions: [
+              "The Python API is running but HuggingFace is not configured.",
+              "Please set HUGGINGFACE_API_KEY in python-api/.env",
+              "Get a token from: https://huggingface.co/settings/tokens",
+            ],
+          },
+          { status: 503 }
+        );
+      }
+    } catch (healthError) {
+      return NextResponse.json(
+        {
+          error: "Cannot connect to Python AI service",
+          details:
+            healthError instanceof Error
+              ? healthError.message
+              : String(healthError),
+          instructions: [
+            "The Python backend is not running or not accessible.",
+            "Please start it by running: npm run python:dev",
+            "Make sure it's running on http://127.0.0.1:8000",
+            "Check the terminal for Python API startup messages",
+          ],
+        },
+        { status: 503 }
+      );
+    }
+
+    // Call Python API for AI processing
+    try {
+      const pythonResponse = await fetch(`${PYTHON_API_URL}/chat`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          question: question,
+          document_text: documentText,
+          chunks: chunks || [],
+        }),
+        signal: AbortSignal.timeout(45000),
+      });
+
+      if (!pythonResponse.ok) {
+        const errorData = await pythonResponse.json().catch(() => ({}));
+
+        return NextResponse.json(
+          {
+            error: "AI processing failed",
+            details:
+              errorData.detail ||
+              `Python API returned ${pythonResponse.status}`,
+            pythonError: errorData,
+          },
+          { status: pythonResponse.status }
+        );
+      }
+
+      const aiResponse = await pythonResponse.json();
+
+      return NextResponse.json({
+        answer: aiResponse.answer,
+        relevantChunks: aiResponse.relevant_chunks,
+        model: aiResponse.model_used,
+        processingTime: aiResponse.processing_time,
+        backend: "python",
+        timestamp: new Date().toISOString(),
+      });
+    } catch (aiError) {
+      if (aiError instanceof Error && aiError.name === "AbortError") {
+        return NextResponse.json(
+          {
+            error: "AI processing timeout",
+            details:
+              "The AI took too long to respond. This can happen when models are loading.",
+            suggestion: "Please try again in 30-60 seconds.",
+          },
+          { status: 408 }
+        );
+      }
+
+      return NextResponse.json(
+        {
+          error: "AI processing failed",
+          details: aiError instanceof Error ? aiError.message : String(aiError),
+        },
+        { status: 500 }
+      );
+    }
   } catch (error) {
-    console.error("HuggingFace API error:", error);
-    return NextResponse.json({
-      answer:
-        "Sorry, there was an error with the AI service. Please try again or configure OpenAI API key.",
-      relevantChunks: 0,
-    });
+    return NextResponse.json(
+      {
+        error: "An unexpected error occurred while processing your question",
+        debug: {
+          errorMessage: error instanceof Error ? error.message : String(error),
+          errorType: error instanceof Error ? error.name : typeof error,
+          timestamp: new Date().toISOString(),
+        },
+      },
+      { status: 500 }
+    );
   }
 }
